@@ -205,6 +205,21 @@ the `offline` scope in the OAuth2 request. This can be modified by the
 `RefreshTokenScopes` compose configuration. When set to an empty array, _all_
 grants will issue refresh tokens.
 
+#### Refresh token scope narrowing
+
+A refresh request may include a `scope` parameter to request a subset of the
+scopes originally granted. Fosite rejects scopes that the client may no longer
+request or that were not part of the original grant, and issues the new access
+token and rotated refresh token with only the requested subset. If `scope` is
+omitted, the original grant is reused.
+
+Narrowing is irreversible: the rotated refresh token is bound to the narrowed
+scope, so a client must start a new authorization flow to regain a broader
+scope. Clients that previously requested a broad scope and then sent a narrower
+`scope` on refresh will now receive only that narrower scope. See
+[Refresh Token Scope Narrowing](docs/how-tos/refresh_token_scope_narrowing.md)
+for details and migration guidance.
+
 #### `fosite.WildcardScopeStrategy`
 
 This is the default strategy, and the safest one. It is best explained by

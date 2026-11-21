@@ -85,12 +85,32 @@ func (c *RefreshTokenGrantHandler) HandleTokenEndpointRequest(ctx context.Contex
 
 	request.SetID(originalRequest.GetID())
 	request.SetSession(originalRequest.GetSession().Clone())
-	request.SetRequestedScopes(originalRequest.GetRequestedScopes())
 	request.SetRequestedAudience(originalRequest.GetRequestedAudience())
 
-	for _, scope := range originalRequest.GetGrantedScopes() {
-		if !c.Config.GetScopeStrategy(ctx)(request.GetClient().GetScopes(), scope) {
+	requestedScopes := request.GetRequestedScopes()
+	if len(requestedScopes) == 0 {
+		// HandleTokenEndpointRequest may be called directly with only the form
+		// populated, in which case the requested scopes have not been parsed yet.
+		if scope := strings.TrimSpace(request.GetRequestForm().Get("scope")); scope != "" {
+			request.SetRequestedScopes(fosite.Arguments(fosite.RemoveEmpty(strings.Split(scope, " "))))
+			requestedScopes = request.GetRequestedScopes()
+		}
+	}
+
+	if len(requestedScopes) == 0 {
+		// RFC 6749 section 6: if the scope parameter is omitted, the new access
+		// token has the same scope as the original access token.
+		request.SetRequestedScopes(originalRequest.GetRequestedScopes())
+		requestedScopes = originalRequest.GetGrantedScopes()
+	}
+
+	scopeStrategy := c.Config.GetScopeStrategy(ctx)
+	for _, scope := range requestedScopes {
+		if !scopeStrategy(request.GetClient().GetScopes(), scope) {
 			return errorsx.WithStack(fosite.ErrInvalidScope.WithHintf("The OAuth 2.0 Client is not allowed to request scope '%s'.", scope))
+		}
+		if !scopeStrategy(originalRequest.GetGrantedScopes(), scope) {
+			return errorsx.WithStack(fosite.ErrInvalidScope.WithHintf("The requested scope '%s' was not granted by the original access token.", scope))
 		}
 		request.GrantScope(scope)
 	}
