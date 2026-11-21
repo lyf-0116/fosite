@@ -51,6 +51,7 @@ var (
 	_ IDTokenIssuerProvider                        = (*Config)(nil)
 	_ JWKSFetcherStrategyProvider                  = (*Config)(nil)
 	_ ClientAuthenticationStrategyProvider         = (*Config)(nil)
+	_ RejectMultipleClientCredentialsProvider      = (*Config)(nil)
 	_ SendDebugMessagesToClientsProvider           = (*Config)(nil)
 	_ ResponseModeHandlerExtensionProvider         = (*Config)(nil)
 	_ MessageCatalogProvider                       = (*Config)(nil)
@@ -165,6 +166,12 @@ type Config struct {
 
 	// ClientAuthenticationStrategy indicates the Strategy to authenticate client requests
 	ClientAuthenticationStrategy ClientAuthenticationStrategy
+
+	// RejectMultipleClientCredentials, if set to true, rejects requests that present more
+	// than one client credential mechanism (e.g. both an HTTP Basic Authorization header and
+	// a 'client_secret' form parameter, or a 'client_assertion' together with a secret).
+	// Defaults to false to preserve compatibility with clients that send redundant credentials.
+	RejectMultipleClientCredentials bool
 
 	// ResponseModeHandlerExtension provides a handler for custom response modes
 	ResponseModeHandlerExtension ResponseModeHandler
@@ -497,6 +504,12 @@ func (c *Config) GetJWTMaxDuration(_ context.Context) time.Duration {
 // `fosite.Fosite.DefaultClientAuthenticationStrategy`
 func (c *Config) GetClientAuthenticationStrategy(_ context.Context) ClientAuthenticationStrategy {
 	return c.ClientAuthenticationStrategy
+}
+
+// GetRejectMultipleClientCredentials returns whether requests presenting more than one
+// client credential mechanism must be rejected. Defaults to false.
+func (c *Config) GetRejectMultipleClientCredentials(_ context.Context) bool {
+	return c.RejectMultipleClientCredentials
 }
 
 // GetDisableRefreshTokenValidation returns whether to disable the validation of the refresh token.

@@ -245,6 +245,19 @@ type ClientAuthenticationStrategyProvider interface {
 	GetClientAuthenticationStrategy(ctx context.Context) ClientAuthenticationStrategy
 }
 
+// RejectMultipleClientCredentialsProvider configures whether requests that
+// present more than one client credential mechanism (for example both an
+// HTTP Basic Authorization header and a 'client_secret' form parameter) are
+// rejected as invalid requests.
+//
+// This is an optional provider: configurations that do not implement it keep
+// the legacy behavior and silently ignore all but one of the credentials.
+type RejectMultipleClientCredentialsProvider interface {
+	// GetRejectMultipleClientCredentials returns true if requests presenting
+	// more than one client credential mechanism must be rejected.
+	GetRejectMultipleClientCredentials(ctx context.Context) bool
+}
+
 // ResponseModeHandlerExtensionProvider returns the provider for configuring the response mode handler extension.
 type ResponseModeHandlerExtensionProvider interface {
 	// GetResponseModeHandlerExtension returns the response mode handler extension.

@@ -128,6 +128,8 @@ func TestAuthenticateClient(t *testing.T) {
 		assertion     string
 		r             *http.Request
 		form          url.Values
+		rejectMulti   bool
+		conflicts     []string
 		expectErr     error
 	}{
 		{
@@ -280,6 +282,33 @@ func TestAuthenticateClient(t *testing.T) {
 			form:      url.Values{"client_id": []string{"foo"}, "client_assertion_type": []string{at}},
 			r:         new(http.Request),
 			expectErr: ErrInvalidRequest,
+		},
+		{
+			d:           "should fail because both basic auth header and post body secret are provided while the gate is enabled",
+			client:      &DefaultOpenIDConnectClient{DefaultClient: &DefaultClient{ID: "foo", Secret: barSecret}, TokenEndpointAuthMethod: "client_secret_basic"},
+			form:        url.Values{"client_id": []string{"foo"}, "client_secret": []string{"bar"}},
+			r:           &http.Request{Header: clientBasicAuthHeader("foo", "bar")},
+			rejectMulti: true,
+			conflicts:   []string{"client_secret_basic", "client_secret_post"},
+			expectErr:   ErrInvalidRequest,
+		},
+		{
+			d:           "should fail because both basic auth header and client assertion are provided while the gate is enabled",
+			client:      &DefaultOpenIDConnectClient{DefaultClient: &DefaultClient{ID: "bar", Secret: barSecret}, JSONWebKeys: rsaJwks, TokenEndpointAuthMethod: "private_key_jwt"},
+			form:        url.Values{"client_assertion": {mustGenerateRSAAssertion(t, jwt.MapClaims{"sub": "bar", "exp": time.Now().Add(time.Hour).Unix(), "iss": "bar", "jti": "12345", "aud": "token-url"}, rsaKey, "kid-foo")}, "client_assertion_type": []string{at}},
+			r:           &http.Request{Header: clientBasicAuthHeader("bar", "bar")},
+			rejectMulti: true,
+			conflicts:   []string{"client_secret_basic", "client_assertion"},
+			expectErr:   ErrInvalidRequest,
+		},
+		{
+			d:           "should fail because both post body secret and client assertion are provided while the gate is enabled",
+			client:      &DefaultOpenIDConnectClient{DefaultClient: &DefaultClient{ID: "bar", Secret: barSecret}, JSONWebKeys: rsaJwks, TokenEndpointAuthMethod: "private_key_jwt"},
+			form:        url.Values{"client_id": []string{"bar"}, "client_secret": []string{"bar"}, "client_assertion": {mustGenerateRSAAssertion(t, jwt.MapClaims{"sub": "bar", "exp": time.Now().Add(time.Hour).Unix(), "iss": "bar", "jti": "12345", "aud": "token-url"}, rsaKey, "kid-foo")}, "client_assertion_type": []string{at}},
+			r:           new(http.Request),
+			rejectMulti: true,
+			conflicts:   []string{"client_secret_post", "client_assertion"},
+			expectErr:   ErrInvalidRequest,
 		},
 		{
 			d:         "should fail because client_assertion_type is unknown",
@@ -521,10 +550,18 @@ func TestAuthenticateClient(t *testing.T) {
 			store := storage.NewMemoryStore()
 			store.Clients[tc.client.ID] = tc.client
 			f.Store = store
+			f.Config.(*Config).RejectMultipleClientCredentials = tc.rejectMulti
 
 			c, err := f.AuthenticateClient(context.Background(), tc.r, tc.form)
 			if tc.expectErr != nil {
 				require.EqualError(t, err, tc.expectErr.Error())
+				if len(tc.conflicts) > 0 {
+					var rfcError *RFC6749Error
+					require.True(t, errors.As(err, &rfcError))
+					for _, conflict := range tc.conflicts {
+						assert.Contains(t, rfcError.HintField, conflict)
+					}
+				}
 				return
 			}
 
@@ -594,4 +631,49 @@ func TestAuthenticateClientTwice(t *testing.T) {
 	require.Error(t, err)
 	assert.EqualError(t, err, ErrJTIKnown.Error())
 	assert.Nil(t, c)
+}
+
+func TestAuthenticateClientMultipleCredentialsGate(t *testing.T) {
+	hasher := &BCrypt{Config: &Config{HashCost: 6}}
+	barSecret, err := hasher.Hash(context.TODO(), []byte("bar"))
+	require.NoError(t, err)
+
+	// A legacy, non-OIDC client that redundantly sends the secret both in the
+	// HTTP Basic Authorization header and in the form body.
+	client := &DefaultClient{ID: "foo", Secret: barSecret}
+	store := storage.NewMemoryStore()
+	store.Clients[client.ID] = client
+
+	newFosite := func(rejectMultiple bool) *Fosite {
+		return &Fosite{
+			Store: store,
+			Config: &Config{
+				JWKSFetcherStrategy:             NewDefaultJWKSFetcherStrategy(),
+				ClientSecretsHasher:             hasher,
+				TokenURL:                        "token-url",
+				HTTPClient:                      retryablehttp.NewClient(),
+				RejectMultipleClientCredentials: rejectMultiple,
+			},
+		}
+	}
+
+	request := &http.Request{Header: clientBasicAuthHeader("foo", "bar")}
+	form := url.Values{"client_id": []string{"foo"}, "client_secret": []string{"bar"}}
+
+	// Gate disabled (default): the redundant form secret is ignored and the
+	// request keeps authenticating successfully via the Basic header.
+	authenticated, err := newFosite(false).AuthenticateClient(context.Background(), request, form)
+	require.NoError(t, err)
+	assert.Equal(t, client.ID, authenticated.GetID())
+
+	// Gate enabled: the same request is rejected before any credential is
+	// evaluated, and the hint names both conflicting mechanisms.
+	_, err = newFosite(true).AuthenticateClient(context.Background(), request, form)
+	require.Error(t, err)
+	assert.EqualError(t, err, ErrInvalidRequest.Error())
+
+	var rfcError *RFC6749Error
+	require.True(t, errors.As(err, &rfcError))
+	assert.Contains(t, rfcError.HintField, "client_secret_basic")
+	assert.Contains(t, rfcError.HintField, "client_secret_post")
 }

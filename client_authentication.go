@@ -28,6 +28,56 @@ type ClientAuthenticationStrategy func(context.Context, *http.Request, url.Value
 // #nosec:gosec G101 - False Positive
 const clientAssertionJWTBearerType = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 
+// Names of the supported client credential presentation mechanisms. They are
+// used to report which credentials conflict when more than one is presented.
+const (
+	clientCredentialsMethodBasic     = "client_secret_basic"
+	clientCredentialsMethodPost      = "client_secret_post"
+	clientCredentialsMethodAssertion = "client_assertion"
+)
+
+// clientCredentialsMethods inspects the request and its form body and returns
+// the client credential presentation mechanisms that were used, in a stable
+// order. A credential is only counted when it actually carries a value.
+func clientCredentialsMethods(r *http.Request, form url.Values) []string {
+	var methods []string
+
+	if _, secret, ok := r.BasicAuth(); ok && secret != "" {
+		methods = append(methods, clientCredentialsMethodBasic)
+	}
+
+	if form.Get("client_secret") != "" {
+		methods = append(methods, clientCredentialsMethodPost)
+	}
+
+	if form.Get("client_assertion_type") != "" {
+		methods = append(methods, clientCredentialsMethodAssertion)
+	}
+
+	return methods
+}
+
+// rejectMultipleClientCredentials enforces that a request presents at most one
+// client credential mechanism. The check is opt-in: when the configuration does
+// not implement RejectMultipleClientCredentialsProvider or the flag is disabled,
+// the legacy behavior of silently ignoring redundant credentials is preserved so
+// existing clients can be migrated gradually.
+func (f *Fosite) rejectMultipleClientCredentials(ctx context.Context, r *http.Request, form url.Values) error {
+	provider, ok := f.Config.(RejectMultipleClientCredentialsProvider)
+	if !ok || !provider.GetRejectMultipleClientCredentials(ctx) {
+		return nil
+	}
+
+	methods := clientCredentialsMethods(r, form)
+	if len(methods) <= 1 {
+		return nil
+	}
+
+	return errorsx.WithStack(ErrInvalidRequest.WithHintf(
+		"The request must not present more than one client authentication mechanism, but the following were provided: '%s'. Send only one of them.",
+		strings.Join(methods, "', '")))
+}
+
 func (f *Fosite) findClientPublicJWK(ctx context.Context, oidcClient OpenIDConnectClient, t *jwt.Token, expectsRSAKey bool) (interface{}, error) {
 	if set := oidcClient.GetJSONWebKeys(); set != nil {
 		return findPublicKey(t, set, expectsRSAKey)
@@ -66,6 +116,10 @@ func (f *Fosite) AuthenticateClient(ctx context.Context, r *http.Request, form u
 // DefaultClientAuthenticationStrategy provides the fosite's default client authentication strategy,
 // HTTP Basic Authentication and JWT Bearer
 func (f *Fosite) DefaultClientAuthenticationStrategy(ctx context.Context, r *http.Request, form url.Values) (Client, error) {
+	if err := f.rejectMultipleClientCredentials(ctx, r, form); err != nil {
+		return nil, err
+	}
+
 	if assertionType := form.Get("client_assertion_type"); assertionType == clientAssertionJWTBearerType {
 		assertion := form.Get("client_assertion")
 		if len(assertion) == 0 {
