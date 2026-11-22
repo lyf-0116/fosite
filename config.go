@@ -63,6 +63,13 @@ type ScopeStrategyProvider interface {
 	GetScopeStrategy(ctx context.Context) ScopeStrategy
 }
 
+// AllowAnyRequestedScopeProvider returns the provider for configuring whether requested scopes
+// may exceed the OAuth 2.0 Client's registered scopes.
+type AllowAnyRequestedScopeProvider interface {
+	// GetAllowAnyRequestedScope returns whether any requested scope is allowed.
+	GetAllowAnyRequestedScope(ctx context.Context) bool
+}
+
 // AudienceStrategyProvider returns the provider for configuring the audience strategy.
 type AudienceStrategyProvider interface {
 	// GetAudienceStrategy returns the audience strategy.

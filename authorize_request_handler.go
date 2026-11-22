@@ -194,13 +194,7 @@ func (f *Fosite) parseAuthorizeScope(_ *http.Request, request *AuthorizeRequest)
 }
 
 func (f *Fosite) validateAuthorizeScope(ctx context.Context, _ *http.Request, request *AuthorizeRequest) error {
-	for _, permission := range request.GetRequestedScopes() {
-		if !f.Config.GetScopeStrategy(ctx)(request.Client.GetScopes(), permission) {
-			return errorsx.WithStack(ErrInvalidScope.WithHintf("The OAuth 2.0 Client is not allowed to request scope '%s'.", permission))
-		}
-	}
-
-	return nil
+	return ValidateRequestedScopes(ctx, f.Config, request.Client.GetScopes(), request.GetRequestedScopes())
 }
 
 func (f *Fosite) validateResponseTypes(r *http.Request, request *AuthorizeRequest) error {

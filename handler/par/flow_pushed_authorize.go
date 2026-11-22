@@ -50,10 +50,8 @@ func (c *PushedAuthorizeHandler) HandlePushedAuthorizeEndpointRequest(ctx contex
 	}
 
 	client := ar.GetClient()
-	for _, scope := range ar.GetRequestedScopes() {
-		if !c.Config.GetScopeStrategy(ctx)(client.GetScopes(), scope) {
-			return errorsx.WithStack(fosite.ErrInvalidScope.WithHintf("The OAuth 2.0 Client is not allowed to request scope '%s'.", scope))
-		}
+	if err := fosite.ValidateRequestedScopes(ctx, c.Config, client.GetScopes(), ar.GetRequestedScopes()); err != nil {
+		return err
 	}
 
 	if err := c.Config.GetAudienceStrategy(ctx)(client.GetAudience(), ar.GetRequestedAudience()); err != nil {

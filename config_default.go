@@ -30,6 +30,7 @@ var (
 	_ RefreshTokenLifespanProvider                 = (*Config)(nil)
 	_ AccessTokenLifespanProvider                  = (*Config)(nil)
 	_ ScopeStrategyProvider                        = (*Config)(nil)
+	_ AllowAnyRequestedScopeProvider               = (*Config)(nil)
 	_ AudienceStrategyProvider                     = (*Config)(nil)
 	_ RedirectSecureCheckerProvider                = (*Config)(nil)
 	_ RefreshTokenScopesProvider                   = (*Config)(nil)
@@ -109,6 +110,13 @@ type Config struct {
 
 	// ScopeStrategy sets the scope strategy that should be supported, for example fosite.WildcardScopeStrategy.
 	ScopeStrategy ScopeStrategy
+
+	// AllowAnyRequestedScope if set to true, the authorize and pushed authorize endpoints accept
+	// any requested scope, even scopes that are not covered by the OAuth 2.0 Client's registered
+	// scopes. This may be required by deployments that intentionally allow dynamic scope escalation,
+	// but it weakens a security relevant check and a warning is logged when it is in effect.
+	// Defaults to false.
+	AllowAnyRequestedScope bool
 
 	// AudienceMatchingStrategy sets the audience matching strategy that should be supported, defaults to fosite.DefaultsAudienceMatchingStrategy.
 	AudienceMatchingStrategy AudienceMatchingStrategy
@@ -371,6 +379,11 @@ func (c *Config) GetScopeStrategy(_ context.Context) ScopeStrategy {
 		c.ScopeStrategy = WildcardScopeStrategy
 	}
 	return c.ScopeStrategy
+}
+
+// GetAllowAnyRequestedScope returns whether any requested scope is allowed. Defaults to false.
+func (c *Config) GetAllowAnyRequestedScope(_ context.Context) bool {
+	return c.AllowAnyRequestedScope
 }
 
 // GetAudienceStrategy returns the scope strategy to be used. Defaults to glob scope strategy.

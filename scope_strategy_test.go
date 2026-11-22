@@ -4,11 +4,45 @@
 package fosite
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+type nilScopeStrategyConfigurator struct {
+	Configurator
+}
+
+func (nilScopeStrategyConfigurator) GetScopeStrategy(_ context.Context) ScopeStrategy {
+	return nil
+}
+
+func TestValidateRequestedScopes(t *testing.T) {
+	ctx := context.Background()
+	clientScopes := []string{"foo", "bar"}
+
+	t.Run("rejects scopes beyond the registered scopes with the default strategy", func(t *testing.T) {
+		conf := &Config{}
+		require.NoError(t, ValidateRequestedScopes(ctx, conf, clientScopes, []string{"foo", "bar"}))
+		err := ValidateRequestedScopes(ctx, conf, clientScopes, []string{"foo", "baz"})
+		require.ErrorIs(t, err, ErrInvalidScope)
+	})
+
+	t.Run("falls back to a safe default when the config provides no strategy", func(t *testing.T) {
+		conf := nilScopeStrategyConfigurator{Configurator: &Config{}}
+		require.NoError(t, ValidateRequestedScopes(ctx, conf, clientScopes, []string{"foo"}))
+		err := ValidateRequestedScopes(ctx, conf, clientScopes, []string{"baz"})
+		require.ErrorIs(t, err, ErrInvalidScope)
+	})
+
+	t.Run("allows any requested scope only with the explicit opt-in", func(t *testing.T) {
+		conf := &Config{AllowAnyRequestedScope: true}
+		require.NoError(t, ValidateRequestedScopes(ctx, conf, clientScopes, []string{"foo", "baz", "everything"}))
+	})
+}
 
 func TestHierarchicScopeStrategy(t *testing.T) {
 	var strategy ScopeStrategy = HierarchicScopeStrategy

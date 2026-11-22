@@ -111,6 +111,7 @@ type Configurator interface {
 	GetJWTMaxDurationProvider
 	AudienceStrategyProvider
 	ScopeStrategyProvider
+	AllowAnyRequestedScopeProvider
 	RedirectSecureCheckerProvider
 	OmitRedirectScopeParamProvider
 	SanitationAllowedProvider

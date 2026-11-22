@@ -3,7 +3,14 @@
 
 package fosite
 
-import "strings"
+import (
+	"context"
+	"log"
+	"strings"
+	"sync"
+
+	"github.com/ory/x/errorsx"
+)
 
 // ScopeStrategy is a strategy for matching scopes.
 type ScopeStrategy func(haystack []string, needle string) bool
@@ -46,6 +53,42 @@ func ExactScopeStrategy(haystack []string, needle string) bool {
 	}
 
 	return false
+}
+
+var warnAllowAnyRequestedScopeOnce sync.Once
+
+// ValidateRequestedScopes ensures that every requested scope is covered by the OAuth 2.0 Client's
+// registered scopes, using the scope strategy resolved from the config. It is shared by all
+// authorization request entry points (the authorize endpoint and the pushed authorization request
+// endpoint) so that they can not diverge.
+//
+// If the config does not provide a scope strategy, a safe built-in default is used which rejects
+// scopes that exceed the client's registered scopes. Validation can therefore never silently
+// degrade to allowing everything when no strategy was configured.
+//
+// Deployments that intentionally allow clients to request scopes beyond their registered scopes
+// (dynamic scope escalation) must explicitly opt in via Config.AllowAnyRequestedScope. Because
+// this weakens a security relevant check, a warning is logged when the opt-in is in effect.
+func ValidateRequestedScopes(ctx context.Context, config Configurator, clientScopes, requestedScopes []string) error {
+	if config.GetAllowAnyRequestedScope(ctx) {
+		warnAllowAnyRequestedScopeOnce.Do(func() {
+			log.Println("fosite: security warning: Config.AllowAnyRequestedScope is enabled, requested scopes are not validated against the OAuth 2.0 Client's registered scopes and any requested scope is allowed. Only enable this if your deployment intentionally allows dynamic scope escalation.")
+		})
+		return nil
+	}
+
+	strategy := config.GetScopeStrategy(ctx)
+	if strategy == nil {
+		strategy = WildcardScopeStrategy
+	}
+
+	for _, scope := range requestedScopes {
+		if !strategy(clientScopes, scope) {
+			return errorsx.WithStack(ErrInvalidScope.WithHintf("The OAuth 2.0 Client is not allowed to request scope '%s'.", scope))
+		}
+	}
+
+	return nil
 }
 
 func WildcardScopeStrategy(matchers []string, needle string) bool {
