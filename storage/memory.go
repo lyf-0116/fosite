@@ -51,9 +51,14 @@ type MemoryStore struct {
 	PKCES           map[string]fosite.Requester
 	Users           map[string]MemoryUserRelation
 	BlacklistedJTIs map[string]time.Time
-	// In-memory request ID to token signatures
-	AccessTokenRequestIDs  map[string]string
-	RefreshTokenRequestIDs map[string]string
+	// In-memory request ID to token signatures. A single authorization (request
+	// ID) can own more than one token of the same type, so every request ID maps
+	// to the set of all token signatures issued under it rather than a single
+	// signature. This one-to-many mapping is what allows revocation to address a
+	// specific token by its signature while still being able to cascade revoke
+	// all tokens of the same authorization grant by request ID.
+	AccessTokenRequestIDs  map[string]map[string]bool
+	RefreshTokenRequestIDs map[string]map[string]bool
 	DeviceCodesRequestIDs  map[string]DeviceAuthPair
 	UserCodesRequestIDs    map[string]string
 	// Public keys to check signature in auth grant jwt assertion.
@@ -86,8 +91,8 @@ func NewMemoryStore() *MemoryStore {
 		DeviceAuths:            make(map[string]fosite.DeviceRequester),
 		PKCES:                  make(map[string]fosite.Requester),
 		Users:                  make(map[string]MemoryUserRelation),
-		AccessTokenRequestIDs:  make(map[string]string),
-		RefreshTokenRequestIDs: make(map[string]string),
+		AccessTokenRequestIDs:  make(map[string]map[string]bool),
+		RefreshTokenRequestIDs: make(map[string]map[string]bool),
 		DeviceCodesRequestIDs:  make(map[string]DeviceAuthPair),
 		UserCodesRequestIDs:    make(map[string]string),
 		BlacklistedJTIs:        make(map[string]time.Time),
@@ -155,8 +160,8 @@ func NewExampleStore() *MemoryStore {
 		RefreshTokens:          map[string]StoreRefreshToken{},
 		PKCES:                  map[string]fosite.Requester{},
 		DeviceAuths:            make(map[string]fosite.DeviceRequester),
-		AccessTokenRequestIDs:  map[string]string{},
-		RefreshTokenRequestIDs: map[string]string{},
+		AccessTokenRequestIDs:  map[string]map[string]bool{},
+		RefreshTokenRequestIDs: map[string]map[string]bool{},
 		DeviceCodesRequestIDs:  make(map[string]DeviceAuthPair),
 		UserCodesRequestIDs:    make(map[string]string),
 		IssuerPublicKeys:       map[string]IssuerPublicKeys{},
@@ -318,7 +323,12 @@ func (s *MemoryStore) CreateAccessTokenSession(_ context.Context, signature stri
 	defer s.accessTokensMutex.Unlock()
 
 	s.AccessTokens[signature] = req
-	s.AccessTokenRequestIDs[req.GetID()] = signature
+	signatures, ok := s.AccessTokenRequestIDs[req.GetID()]
+	if !ok {
+		signatures = make(map[string]bool)
+		s.AccessTokenRequestIDs[req.GetID()] = signatures
+	}
+	signatures[signature] = true
 	return nil
 }
 
@@ -334,9 +344,28 @@ func (s *MemoryStore) GetAccessTokenSession(_ context.Context, signature string,
 }
 
 func (s *MemoryStore) DeleteAccessTokenSession(_ context.Context, signature string) error {
+	// We first lock accessTokenRequestIDsMutex and then accessTokensMutex because this is the same order
+	// locking happens in CreateAccessTokenSession and RevokeAccessToken and using the same order prevents deadlocks.
+	s.accessTokenRequestIDsMutex.Lock()
+	defer s.accessTokenRequestIDsMutex.Unlock()
 	s.accessTokensMutex.Lock()
 	defer s.accessTokensMutex.Unlock()
 
+	return s.deleteAccessTokenSession(signature)
+}
+
+// deleteAccessTokenSession removes the access token identified by its signature from both the
+// signature-keyed store and the one-to-many request ID index. The caller must already hold
+// accessTokenRequestIDsMutex and accessTokensMutex.
+func (s *MemoryStore) deleteAccessTokenSession(signature string) error {
+	if req, ok := s.AccessTokens[signature]; ok {
+		if signatures, exists := s.AccessTokenRequestIDs[req.GetID()]; exists {
+			delete(signatures, signature)
+			if len(signatures) == 0 {
+				delete(s.AccessTokenRequestIDs, req.GetID())
+			}
+		}
+	}
 	delete(s.AccessTokens, signature)
 	return nil
 }
@@ -350,7 +379,12 @@ func (s *MemoryStore) CreateRefreshTokenSession(_ context.Context, signature, ac
 	defer s.refreshTokensMutex.Unlock()
 
 	s.RefreshTokens[signature] = StoreRefreshToken{active: true, Requester: req, accessTokenSignature: accessTokenSignature}
-	s.RefreshTokenRequestIDs[req.GetID()] = signature
+	signatures, ok := s.RefreshTokenRequestIDs[req.GetID()]
+	if !ok {
+		signatures = make(map[string]bool)
+		s.RefreshTokenRequestIDs[req.GetID()] = signatures
+	}
+	signatures[signature] = true
 	return nil
 }
 
@@ -369,9 +403,28 @@ func (s *MemoryStore) GetRefreshTokenSession(_ context.Context, signature string
 }
 
 func (s *MemoryStore) DeleteRefreshTokenSession(_ context.Context, signature string) error {
+	// We first lock refreshTokenRequestIDsMutex and then refreshTokensMutex because this is the same order
+	// locking happens in CreateRefreshTokenSession and RevokeRefreshToken and using the same order prevents deadlocks.
+	s.refreshTokenRequestIDsMutex.Lock()
+	defer s.refreshTokenRequestIDsMutex.Unlock()
 	s.refreshTokensMutex.Lock()
 	defer s.refreshTokensMutex.Unlock()
 
+	return s.deleteRefreshTokenSession(signature)
+}
+
+// deleteRefreshTokenSession removes the refresh token identified by its signature from both the
+// signature-keyed store and the one-to-many request ID index. The caller must already hold
+// refreshTokenRequestIDsMutex and refreshTokensMutex.
+func (s *MemoryStore) deleteRefreshTokenSession(signature string) error {
+	if rel, ok := s.RefreshTokens[signature]; ok {
+		if signatures, exists := s.RefreshTokenRequestIDs[rel.GetID()]; exists {
+			delete(signatures, signature)
+			if len(signatures) == 0 {
+				delete(s.RefreshTokenRequestIDs, rel.GetID())
+			}
+		}
+	}
 	delete(s.RefreshTokens, signature)
 	return nil
 }
@@ -398,7 +451,14 @@ func (s *MemoryStore) RevokeRefreshToken(ctx context.Context, requestID string) 
 	s.refreshTokensMutex.Lock()
 	defer s.refreshTokensMutex.Unlock()
 
-	if signature, exists := s.RefreshTokenRequestIDs[requestID]; exists {
+	signatures, exists := s.RefreshTokenRequestIDs[requestID]
+	if !exists {
+		return nil
+	}
+
+	// A refresh token may have been issued more than once for the same authorization
+	// (e.g. through rotation), so invalidate every refresh token belonging to this grant.
+	for signature := range signatures {
 		rel, ok := s.RefreshTokens[signature]
 		if !ok {
 			return fosite.ErrNotFound
@@ -409,12 +469,23 @@ func (s *MemoryStore) RevokeRefreshToken(ctx context.Context, requestID string) 
 	return nil
 }
 
-func (s *MemoryStore) RevokeAccessToken(ctx context.Context, requestID string) error {
-	s.accessTokenRequestIDsMutex.RLock()
-	defer s.accessTokenRequestIDsMutex.RUnlock()
+func (s *MemoryStore) RevokeAccessToken(_ context.Context, requestID string) error {
+	// We first lock accessTokenRequestIDsMutex and then accessTokensMutex because this is the same order
+	// locking happens in CreateAccessTokenSession and using the same order prevents deadlocks.
+	s.accessTokenRequestIDsMutex.Lock()
+	defer s.accessTokenRequestIDsMutex.Unlock()
+	s.accessTokensMutex.Lock()
+	defer s.accessTokensMutex.Unlock()
 
-	if signature, exists := s.AccessTokenRequestIDs[requestID]; exists {
-		if err := s.DeleteAccessTokenSession(ctx, signature); err != nil {
+	signatures, exists := s.AccessTokenRequestIDs[requestID]
+	if !exists {
+		return nil
+	}
+
+	// More than one access token can be issued for the same authorization, so revoke
+	// every access token belonging to this grant instead of just the latest one.
+	for signature := range signatures {
+		if err := s.deleteAccessTokenSession(signature); err != nil {
 			return err
 		}
 	}
