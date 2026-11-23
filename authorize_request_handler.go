@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-jose/go-jose/v3"
 	"go.opentelemetry.io/otel/trace"
@@ -304,21 +305,33 @@ func (f *Fosite) authorizeRequestFromPAR(ctx context.Context, r *http.Request, r
 		return false, errorsx.WithStack(ErrInvalidRequestURI.WithHint("Invalid PAR session").WithWrap(err).WithDebug(err.Error()))
 	}
 
+	// the PAR context is only valid for a short period of time, as advertised
+	// in the "expires_in" value of the PAR response
+	if session := parRequest.GetSession(); session == nil || !session.GetExpiresAt(PushedAuthorizeRequestContext).After(time.Now().UTC()) {
+		return false, errorsx.WithStack(ErrInvalidRequestURI.WithHint("The PAR session has expired."))
+	}
+
+	// validate the clients match before consuming the session, so that a
+	// correctable mistake does not burn the PAR session for the legitimate client
+	if clientID != parRequest.GetClient().GetID() {
+		return false, errorsx.WithStack(ErrInvalidRequest.WithHint("The 'client_id' must match the one sent in the pushed authorization request."))
+	}
+
+	// consume the session exactly once; if it was already taken (e.g. by a
+	// concurrent request), the delete reports it and we reject the request
+	if err := storage.DeletePARSession(ctx, requestURI); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, errorsx.WithStack(ErrInvalidRequestURI.WithHint("The PAR session has already been used.").WithWrap(err).WithDebug(err.Error()))
+		}
+		return false, errorsx.WithStack(ErrServerError.WithWrap(err).WithDebug(err.Error()))
+	}
+
 	// hydrate the request object
 	request.Merge(parRequest)
 	request.RedirectURI = parRequest.GetRedirectURI()
 	request.ResponseTypes = parRequest.GetResponseTypes()
 	request.State = parRequest.GetState()
 	request.ResponseMode = parRequest.GetResponseMode()
-
-	if err := storage.DeletePARSession(ctx, requestURI); err != nil {
-		return false, errorsx.WithStack(ErrServerError.WithWrap(err).WithDebug(err.Error()))
-	}
-
-	// validate the clients match
-	if clientID != request.GetClient().GetID() {
-		return false, errorsx.WithStack(ErrInvalidRequest.WithHint("The 'client_id' must match the one sent in the pushed authorization request."))
-	}
 
 	return true, nil
 }

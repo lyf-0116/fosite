@@ -16,6 +16,8 @@ type PARStorage interface {
 	CreatePARSession(ctx context.Context, requestURI string, request AuthorizeRequester) error
 	// GetPARSession gets the push authorization request context. The caller is expected to merge the AuthorizeRequest.
 	GetPARSession(ctx context.Context, requestURI string) (AuthorizeRequester, error)
-	// DeletePARSession deletes the context.
+	// DeletePARSession deletes the context. It must return ErrNotFound if the
+	// session does not exist, so that a PAR session that was already consumed
+	// (e.g. by a concurrent request) can be detected.
 	DeletePARSession(ctx context.Context, requestURI string) (err error)
 }

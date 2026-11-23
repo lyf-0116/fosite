@@ -509,10 +509,15 @@ func (s *MemoryStore) GetPARSession(ctx context.Context, requestURI string) (fos
 	return r, nil
 }
 
-// DeletePARSession deletes the context.
+// DeletePARSession deletes the context. It returns fosite.ErrNotFound if the
+// session does not exist, for example because it was already consumed.
 func (s *MemoryStore) DeletePARSession(ctx context.Context, requestURI string) (err error) {
 	s.parSessionsMutex.Lock()
 	defer s.parSessionsMutex.Unlock()
+
+	if _, ok := s.PARSessions[requestURI]; !ok {
+		return fosite.ErrNotFound
+	}
 
 	delete(s.PARSessions, requestURI)
 	return nil
