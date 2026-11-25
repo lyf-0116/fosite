@@ -309,6 +309,18 @@ func (s *MemoryStore) DeletePKCERequestSession(_ context.Context, code string) e
 	return nil
 }
 
+func (s *MemoryStore) ConsumePKCERequestSession(_ context.Context, code string) error {
+	s.pkcesMutex.Lock()
+	defer s.pkcesMutex.Unlock()
+
+	if _, ok := s.PKCES[code]; !ok {
+		return fosite.ErrNotFound
+	}
+
+	delete(s.PKCES, code)
+	return nil
+}
+
 func (s *MemoryStore) CreateAccessTokenSession(_ context.Context, signature string, req fosite.Requester) error {
 	// We first lock accessTokenRequestIDsMutex and then accessTokensMutex because this is the same order
 	// locking happens in RevokeAccessToken and using the same order prevents deadlocks.
